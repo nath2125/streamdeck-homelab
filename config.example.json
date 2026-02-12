@@ -1,0 +1,66 @@
+{
+  "settings": {
+    "brightness": 60,
+    "poll_interval": 30,
+    "ssh_user": "root",
+    "ssh_timeout": 5,
+    "check_timeout": 5
+  },
+  "hosts": {
+    "pfsense":    { "ip": "10.0.0.1", "ssh_user": "admin" },
+    "haproxy":    { "ip": "10.0.0.2" },
+    "authentik":  { "ip": "10.0.0.3", "ssh_user": "user" },
+    "nextcloud":  { "ip": "10.0.0.4" },
+    "vaultwarden":{ "ip": "10.0.0.5", "ssh_user": "user" },
+    "unraid":     { "ip": "10.0.0.6" },
+    "zfs":        { "ip": "10.0.0.7", "ssh_user": "user" },
+    "pve1":       { "ip": "10.0.0.8" },
+    "pve2":       { "ip": "10.0.0.9" },
+    "pve3":       { "ip": "10.0.0.10" }
+  },
+  "pages": [
+    {
+      "name": "Services",
+      "keys": {
+        "0":  { "label": "WAN",        "check": "ping",     "target": "1.1.1.1" },
+        "1":  { "label": "DNS",        "check": "dns",      "target": "google.com" },
+        "2":  { "label": "CloudFlare", "check": "tcp",      "host": "1.1.1.1", "port": 443 },
+        "3":  { "label": "pfSense",    "check": "https",    "host": "pfsense", "port": 443 },
+        "4":  { "label": "HAProxy",    "check": "tcp",      "host": "haproxy", "port": 443 },
+        "5":  { "label": "CrowdSec",   "check": "ssh_cmd",  "host": "pfsense", "command": "pgrep -x crowdsec", "status_only": true },
+        "6":  { "label": "Pi-hole",    "check": "http",     "url": "http://127.0.0.1/admin/" },
+        "7":  { "label": "Authentik",  "check": "http",     "host": "authentik", "port": 9000 },
+        "8":  { "label": "Nextcloud",  "check": "http",     "host": "nextcloud", "port": 11000 },
+        "9":  { "label": "Immich",     "check": "http",     "host": "nextcloud", "port": 2283 },
+        "10": { "label": "Vaultwarden","check": "http",     "host": "vaultwarden", "port": 4743 },
+        "11": { "label": "Plex",       "check": "http",     "host": "unraid",  "port": 32400, "path": "/web" },
+        "12": { "label": "Unraid",     "check": "https",    "host": "unraid",  "port": 443 }
+      }
+    },
+    {
+      "name": "Infrastructure",
+      "keys": {
+        "0":  { "label": "ZFS Pool",   "check": "ssh_cmd",  "host": "zfs",  "command": "zpool status -x", "expect": "healthy" },
+        "1":  { "label": "PVE Quorum", "check": "ssh_cmd",  "host": "pve1", "command": "pvecm status 2>/dev/null | grep -c 'Quorate:\\\\s*Yes'", "expect": "1" },
+        "2":  { "label": "pve1",       "check": "ping",     "target": "pve1" },
+        "3":  { "label": "pve2",       "check": "ping",     "target": "pve2" },
+        "4":  { "label": "pve3",       "check": "ping",     "target": "pve3" },
+        "5":  { "label": "Unraid",     "check": "ssh_stats","host": "unraid" },
+        "6":  { "label": "ZFS Stor",   "check": "ssh_stats","host": "zfs" },
+        "7":  { "label": "PVE1",       "check": "ssh_stats","host": "pve1" },
+        "8":  { "label": "PVE2",       "check": "ssh_stats","host": "pve2" },
+        "9":  { "label": "PVE3",       "check": "ssh_stats","host": "pve3" }
+      }
+    },
+    {
+      "name": "Actions",
+      "keys": {
+        "0":  { "label": "Reboot\npfSense",  "action": "ssh_cmd", "host": "pfsense", "command": "/sbin/reboot", "confirm": true },
+        "1":  { "label": "Restart\nPlex",     "action": "ssh_cmd", "host": "unraid",  "command": "docker restart plex", "confirm": true },
+        "10": { "label": "Bright+",  "action": "brightness", "level": 100 },
+        "11": { "label": "Bright-",  "action": "brightness", "level": 20 },
+        "12": { "label": "Refresh",  "action": "refresh" }
+      }
+    }
+  ]
+}
