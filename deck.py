@@ -38,6 +38,9 @@ COLOR_RUNNING = "#000044"
 
 NAV_PREV_KEY = 13
 NAV_NEXT_KEY = 14
+WATCHDOG_INTERVAL = 3   # seconds between health checks
+MAX_RETRIES = 10
+RETRY_DELAY = 2  # seconds between restart attempts
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,48 @@ NAV_NEXT_KEY = 14
 def load_config():
     with open(CONFIG_PATH) as f:
         return json.load(f)
+
+
+def recover_usb():
+    """Attempt to recover a stale Stream Deck USB connection."""
+    print("[recovery] Attempting USB device recovery...")
+
+    # Try usbreset first
+    try:
+        result = subprocess.run(
+            ["usbreset", "0fd9:0080"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            print("[recovery] USB reset sent")
+    except Exception:
+        pass
+
+    time.sleep(2)
+
+    # If hidraw device is missing, force USB re-enumeration
+    if not os.path.exists("/dev/hidraw0"):
+        print("[recovery] /dev/hidraw0 missing, forcing USB re-enumeration...")
+        for devdir in os.listdir("/sys/bus/usb/devices/"):
+            vendor_path = f"/sys/bus/usb/devices/{devdir}/idVendor"
+            try:
+                with open(vendor_path) as f:
+                    if f.read().strip() == "0fd9":
+                        config_path = f"/sys/bus/usb/devices/{devdir}/bConfigurationValue"
+                        with open(config_path, "w") as cf:
+                            cf.write("1")
+                        print(f"[recovery] Re-enumerated USB device {devdir}")
+                        time.sleep(2)
+                        break
+            except (FileNotFoundError, PermissionError, OSError):
+                continue
+
+    if os.path.exists("/dev/hidraw0"):
+        print("[recovery] /dev/hidraw0 is back")
+        return True
+    else:
+        print("[recovery] Failed to recover USB device")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +399,8 @@ class StreamDeckApp:
         self.pending_confirms = {}
         self.confirm_lock = threading.Lock()
 
+        self.user_shutdown = False
+
     def start(self):
         decks = DeviceManager().enumerate()
         if not decks:
@@ -378,15 +425,20 @@ class StreamDeckApp:
         confirm_watcher = threading.Thread(target=self._confirm_watcher, daemon=True)
         confirm_watcher.start()
 
+        # Start health watchdog
+        watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
+        watchdog.start()
+
         # Handle signals
         signal.signal(signal.SIGINT, self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
-        print(f"Stream Deck ready. Page: {self.pages[0]['name']}. Press Ctrl+C to exit.")
+        print(f"Stream Deck ready. Page: {self.pages[0]['name']}. Press Ctrl+C to exit.", flush=True)
         self.stop_event.wait()
 
     def _shutdown(self, sig=None, frame=None):
-        print("\nShutting down...")
+        print("\nShutting down...", flush=True)
+        self.user_shutdown = True
         self.stop_event.set()
         if self.deck:
             try:
@@ -623,6 +675,31 @@ class StreamDeckApp:
                     except Exception:
                         pass
 
+    # -- Health watchdog ----------------------------------------------------
+    def _watchdog_loop(self):
+        """Periodically verify the Stream Deck is still responsive."""
+        while not self.stop_event.is_set():
+            self.stop_event.wait(WATCHDOG_INTERVAL)
+            if self.stop_event.is_set():
+                break
+            try:
+                # Try reading firmware version as a health check
+                self.deck.get_firmware_version()
+            except Exception as e:
+                print(f"[watchdog] Stream Deck unresponsive: {e}", flush=True)
+                self._shutdown_for_restart()
+                return
+
+    def _shutdown_for_restart(self):
+        """Signal the main loop to exit so the wrapper can restart."""
+        print("[watchdog] Triggering restart...", flush=True)
+        try:
+            self.deck.reset()
+            self.deck.close()
+        except Exception:
+            pass
+        self.stop_event.set()
+
     # -- Background polling -------------------------------------------------
     def _poll_loop(self):
         """Periodically run all checks in the background."""
@@ -680,6 +757,38 @@ class StreamDeckApp:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def main():
+    retries = 0
+    while retries < MAX_RETRIES:
+        try:
+            app = StreamDeckApp()
+            app.start()
+            # User pressed Ctrl+C or sent SIGTERM - exit cleanly
+            if app.user_shutdown:
+                break
+            # Watchdog or error triggered restart
+            retries += 1
+            print(f"[main] Restarting... (attempt {retries}/{MAX_RETRIES})", flush=True)
+            time.sleep(RETRY_DELAY)
+            recover_usb()
+            continue
+        except KeyboardInterrupt:
+            print("\nExiting.", flush=True)
+            break
+        except Exception as e:
+            retries += 1
+            print(f"[main] Error: {e} (attempt {retries}/{MAX_RETRIES})", flush=True)
+            time.sleep(RETRY_DELAY)
+            recover_usb()
+            continue
+
+        # Clean exit
+        break
+
+    if retries >= MAX_RETRIES:
+        print(f"[main] Failed after {MAX_RETRIES} attempts. Exiting.", flush=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    app = StreamDeckApp()
-    app.start()
+    main()
